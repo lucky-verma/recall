@@ -19,6 +19,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:ExitCode = 0
+$script:Missing = [System.Collections.ArrayList]@()
 $wingetCmds = @()
 $chocoCmds = @()
 
@@ -39,7 +40,22 @@ try {
         $rustOk = $true
         Write-Status $true "Rust: $($cv -join ' ')"
     }
-} catch {}
+    # CMake (Kitware) often installs here; winget may not refresh current session PATH
+    $cmakeBin = "C:\Program Files\CMake\bin"
+    if (Test-Path (Join-Path $cmakeBin "cmake.exe")) { $env:Path = $cmakeBin + ";" + $env:Path }
+    # GnuWin32 (unzip etc.) - CONTRIBUTING.md step 4
+    $gnuWin32Bin = "${env:ProgramFiles(x86)}\GnuWin32\bin"
+    if (Test-Path (Join-Path $gnuWin32Bin "unzip.exe")) { $env:Path = $gnuWin32Bin + ";" + $env:Path }
+    # wget (pre_build.js downloads FFmpeg) - same location as release-app.yml
+    $wgetDir = "C:\wget"
+    if (Test-Path (Join-Path $wgetDir "wget.exe")) { $env:Path = $wgetDir + ";" + $env:Path }
+    # 7-Zip (pre_build.js extracts FFmpeg .7z)
+    $sevenZipPaths = @("C:\Program Files\7-Zip", "${env:ProgramFiles(x86)}\7-Zip")
+    foreach ($sz in $sevenZipPaths) {
+        if (Test-Path (Join-Path $sz "7z.exe")) { $env:Path = $sz + ";" + $env:Path; break }
+    }
+}
+catch {}
 if (-not $rustOk) {
     Write-Status $false "Rust (cargo, rustc)"
     $wingetCmds += "winget install -e --id Rustlang.Rustup"
@@ -67,7 +83,8 @@ Write-Status $llvmExists "LLVM/Clang"
 if (-not $llvmExists) {
     $wingetCmds += "winget install -e --id LLVM.LLVM"
     $chocoCmds += "choco install llvm -y"
-} elseif ($Fix -and -not $llvmSet -and (Test-Path (Join-Path $llvmDir "clang.exe"))) {
+}
+elseif ($Fix -and -not $llvmSet -and (Test-Path (Join-Path $llvmDir "clang.exe"))) {
     [System.Environment]::SetEnvironmentVariable('LIBCLANG_PATH', $llvmDir, 'User')
     if (-not $Quiet) { Write-Host "[FIX] Set LIBCLANG_PATH to $llvmDir (User)" -ForegroundColor Cyan }
 }
@@ -78,8 +95,92 @@ try {
     $null = Get-Command ffmpeg -ErrorAction Stop
     $fv = (ffmpeg -version 2>$null | Select-Object -First 1)
     if ($fv) { $ffmpegOk = $true }
-} catch {}
+}
+catch {}
 Write-Status $ffmpegOk "FFmpeg (in PATH)"
+# --- CMake (required by whisper-rs-sys and other crates) - CONTRIBUTING.md step 2: Kitware.CMake ---
+$cmakeOk = $false
+try {
+    $null = Get-Command cmake -ErrorAction Stop
+    $cmv = (cmake --version 2>$null | Select-Object -First 1)
+    if ($cmv) { $cmakeOk = $true; Write-Status $true "CMake: $($cmv -join ' ')" } else { Write-Status $false "CMake" }
+}
+catch { Write-Status $false "CMake" }
+if (-not $cmakeOk) {
+    $script:Missing.Add(@{ Name = "CMake"; WingetId = "Kitware.CMake" }) | Out-Null
+}
+
+# --- UnZip (GnuWin32) - required by screenpipe-audio build.rs - CONTRIBUTING.md step 2: GnuWin32.UnZip ---
+$unzipOk = $false
+try {
+    $null = Get-Command unzip -ErrorAction Stop
+    $uzv = (unzip -v 2>$null | Select-Object -First 1)
+    if ($uzv) { $unzipOk = $true; Write-Status $true "UnZip (GnuWin32)" } else { Write-Status $false "UnZip (GnuWin32)" }
+}
+catch { Write-Status $false "UnZip (GnuWin32)" }
+if (-not $unzipOk) {
+    $script:Missing.Add(@{ Name = "UnZip (GnuWin32)"; WingetId = "GnuWin32.UnZip" }) | Out-Null
+}
+
+# --- Wget (pre_build.js downloads Windows FFmpeg) - release-app.yml uses C:\wget ---
+$wgetOk = $false
+$wgetPaths = @(
+    "C:\wget\wget.exe",
+    "${env:ProgramFiles(x86)}\GnuWin32\bin\wget.exe",
+    "C:\Program Files\Git\mingw64\bin\wget.exe",
+    "C:\msys64\usr\bin\wget.exe"
+)
+foreach ($wp in $wgetPaths) {
+    if (Test-Path $wp) {
+        try {
+            $null = & $wp --version 2>$null
+            if ($LASTEXITCODE -eq 0) { $wgetOk = $true; break }
+        }
+        catch {}
+    }
+}
+if (-not $wgetOk) {
+    $cmd = Get-Command wget.exe -ErrorAction SilentlyContinue
+    if ($cmd) {
+        try {
+            $null = & $cmd.Source --version 2>$null
+            if ($LASTEXITCODE -eq 0) { $wgetOk = $true }
+        }
+        catch {}
+    }
+}
+Write-Status $wgetOk "Wget (pre_build.js)"
+if (-not $wgetOk) {
+    $script:Missing.Add(@{ Name = "Wget"; WingetId = $null; InstallScript = "Wget" }) | Out-Null
+}
+
+# --- 7-Zip (pre_build.js extracts FFmpeg .7z) ---
+$sevenZipOk = $false
+$sevenZipPaths = @("C:\Program Files\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe")
+foreach ($sz in $sevenZipPaths) {
+    if (Test-Path $sz) {
+        try {
+            $null = & $sz 2>$null
+            if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 7) { $sevenZipOk = $true; break }
+        }
+        catch {}
+    }
+}
+if (-not $sevenZipOk) {
+    $cmd = Get-Command 7z -ErrorAction SilentlyContinue
+    if ($cmd) {
+        try {
+            $null = & $cmd.Source 2>$null
+            if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 7) { $sevenZipOk = $true }
+        }
+        catch {}
+    }
+}
+Write-Status $sevenZipOk "7-Zip (pre_build.js)"
+if (-not $sevenZipOk) {
+    $script:Missing.Add(@{ Name = "7-Zip"; WingetId = "7zip.7zip" }) | Out-Null
+}
+
 if (-not $ffmpegOk) {
     $wingetCmds += "winget install -e --id Gyan.FFmpeg"
     $chocoCmds += "choco install ffmpeg -y"
@@ -91,7 +192,8 @@ try {
     $null = Get-Command bun -ErrorAction Stop
     $bv = (bun --version 2>$null)
     if ($bv) { $bunOk = $true; Write-Status $true "Bun: $bv" } else { Write-Status $false "Bun" }
-} catch { Write-Status $false "Bun" }
+}
+catch { Write-Status $false "Bun" }
 if (-not $bunOk) {
     $wingetCmds += "irm https://bun.sh/install.ps1 | iex"
     $chocoCmds += "choco install bun -y"
@@ -103,7 +205,8 @@ try {
     $null = Get-Command protoc -ErrorAction Stop
     $pv = (protoc --version 2>$null)
     if ($pv) { $protocOk = $true; Write-Status $true "Protobuf (protoc): $($pv -join ' ')" } else { Write-Status $false "Protobuf (protoc)" }
-} catch { Write-Status $false "Protobuf (protoc)" }
+}
+catch { Write-Status $false "Protobuf (protoc)" }
 if (-not $protocOk) {
     $wingetCmds += "winget install -e --id Google.Protobuf"
     $chocoCmds += "choco install protobuf -y"
