@@ -49,6 +49,22 @@ jobs:
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Install vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "7adc2e4d49e8d0efc07a369079faa6bc3dbb90f3"
+
+      - name: Cache vcpkg installed
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg/installed
+          key: vcpkg-installed-win-${{ hashFiles('screenpipe/Cargo.lock') }}
+
+      - name: Install vcpkg packages (ffmpeg)
+        shell: powershell
+        run: |
+          & "$env:VCPKG_ROOT\vcpkg.exe" install ffmpeg:x64-windows
+
       - name: Install 7-Zip
         shell: powershell
         run: |
@@ -73,6 +89,15 @@ jobs:
           }
           echo "C:\wget" >> $env:GITHUB_PATH
           & "$wgetDir\wget.exe" --version
+
+      - name: Install GnuWin32 UnZip
+        shell: powershell
+        run: |
+          $gnuBin = "${env:ProgramFiles(x86)}\GnuWin32\bin"
+          if (-not (Test-Path "$gnuBin\unzip.exe")) {
+            winget install -e --id GnuWin32.UnZip --silent --accept-package-agreements --accept-source-agreements
+          }
+          if (Test-Path "$gnuBin\unzip.exe") { echo $gnuBin >> $env:GITHUB_PATH; Write-Host "UnZip at $gnuBin" }
 
       - name: Cache LLVM
         id: cache-llvm
@@ -103,10 +128,39 @@ jobs:
         run: |
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
+      - name: Install Vulkan SDK
+        shell: powershell
+        run: |
+          $vulkanVersion = "1.3.290.0"
+          $vulkanPath = "C:\VulkanSDK\$vulkanVersion"
+          if (Test-Path "$vulkanPath\Lib\vulkan-1.lib") { Write-Host "Vulkan SDK already installed" }
+          else {
+            $installerUrl = "https://sdk.lunarg.com/sdk/download/$vulkanVersion/windows/VulkanSDK-$vulkanVersion-Installer.exe"
+            $installerPath = "$env:TEMP\VulkanSDK-Installer.exe"
+            Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+            Start-Process -FilePath $installerPath -ArgumentList "--accept-licenses", "--default-answer", "--confirm-command", "install" -Wait -NoNewWindow
+            Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          }
+          echo "VULKAN_SDK=$vulkanPath" >> $env:GITHUB_ENV
+          if (!(Test-Path "$vulkanPath\Lib\vulkan-1.lib")) { throw "Vulkan SDK install failed" }
+
       - name: Setup Python (for MKL)
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install CMake
+        shell: powershell
+        run: |
+          $paths = @("C:\Program Files\CMake\bin", "C:\Program Files\Kitware\CMake\bin")
+          foreach ($d in $paths) {
+            if (Test-Path "$d\cmake.exe") { echo $d >> $env:GITHUB_PATH; Write-Host "CMake at $d"; exit 0 }
+          }
+          winget install -e --id Kitware.CMake --silent --accept-package-agreements --accept-source-agreements
+          foreach ($d in $paths) {
+            if (Test-Path "$d\cmake.exe") { echo $d >> $env:GITHUB_PATH; Write-Host "CMake at $d"; exit 0 }
+          }
+          throw "CMake not found after install"
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -122,6 +176,9 @@ jobs:
           .\scripts\setup-screenpipe.ps1 -SkipPrereqCheck
         env:
           LIBCLANG_PATH: "C:\Program Files\LLVM\bin"
+          VCPKG_STATIC_LINKAGE: "true"
+          KNF_STATIC_CRT: "1"
+          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF -DGGML_AVX512_BF16=OFF"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

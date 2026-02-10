@@ -137,6 +137,10 @@ $exeName = "screenpipe-$target.exe"
 $sourceExe = Join-Path (Join-Path (Join-Path $ScreenpipeRoot "target") $targetDir) "screenpipe.exe"
 $binariesDir = Join-Path (Join-Path (Join-Path (Join-Path $ScreenpipeRoot "apps") "screenpipe-app-tauri") "src-tauri") "binaries"
 $destExe = Join-Path $binariesDir $exeName
+if (-not $sourceExe -or -not $binariesDir) {
+    Write-Error "Sidecar paths not set (ScreenpipeRoot=$ScreenpipeRoot targetDir=$targetDir). Run from repo root: .\scripts\setup-screenpipe.ps1"
+    exit 1
+}
 if (-not (Test-Path $sourceExe)) {
     Write-Error "Binary not found: $sourceExe. Build may have targeted a different profile/dir."
     exit 1
