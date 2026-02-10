@@ -173,6 +173,10 @@ jobs:
       - name: Build (setup-screenpipe.ps1)
         shell: powershell
         run: |
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          $env:LIBCLANG_PATH = $llvmBin
+          $env:Path = "$llvmBin;$env:Path"
+          if (-not (Test-Path "$llvmBin\libclang.dll")) { throw "libclang not found at $llvmBin - bindgen/whisper-rs-sys requires it" }
           .\scripts\setup-screenpipe.ps1 -SkipPrereqCheck
         env:
           LIBCLANG_PATH: "C:\Program Files\LLVM\bin"
