@@ -183,7 +183,7 @@ stateDiagram-v2
 
 Requirements follow [CONTRIBUTING.md § Windows](https://github.com/screenpipe/screenpipe/blob/main/CONTRIBUTING.md#windows) (steps 2 and 4).
 
-**Upstream list (from CONTRIBUTING):** winget install — Microsoft.VisualStudio.2022.BuildTools, Rustlang.Rustup, LLVM.LLVM, Kitware.CMake, GnuWin32.UnZip, Git.Git, JernejSimoncic.Wget, 7zip.7zip; then Bun via `irm https://bun.sh/install.ps1 | iex`. Upstream also uses **vcpkg** (clone, bootstrap, `vcpkg install ffmpeg:x64-windows`) and sets PKG_CONFIG_PATH, VCPKG_ROOT, LIBCLANG_PATH, and PATH to GnuWin32. **Our flow** does not use vcpkg: we rely on Screenpipe’s `pre_build.js` to download and extract FFmpeg (via wget + 7z), so you only need the tools above (and Python for MKL/vcredist steps that the setup script runs).
+**Upstream list (from CONTRIBUTING):** winget install — Microsoft.VisualStudio.2022.BuildTools, Rustlang.Rustup, LLVM.LLVM, Kitware.CMake, GnuWin32.UnZip, Git.Git, JernejSimoncic.Wget, 7zip.7zip; then Bun via `irm https://bun.sh/install.ps1 | iex`. Upstream also uses **vcpkg** (clone, bootstrap, `vcpkg install ffmpeg:x64-windows`) and sets PKG_CONFIG_PATH, VCPKG_ROOT, LIBCLANG_PATH, and PATH to GnuWin32. **Our flow** uses vcpkg in CI (for FFmpeg) and also runs Screenpipe's `pre_build.js` to download and extract FFmpeg (via wget + 7z). You need the tools above plus Python for MKL/vcredist steps that the setup script runs.
 
 ```mermaid
 flowchart TB
@@ -268,7 +268,9 @@ flowchart TB
   C -->|Yes| D[Parallel: cargo build --release + bun install]
   D --> E["Copy screenpipe.exe to src-tauri/binaries/screenpipe-{target}.exe"]
   E --> F[Run pre_build.js: wget FFmpeg .7z, 7z extract, optional Bun]
-  F --> G[bun tauri build]
+  F --> F2["Setup MKL + vcredist DLLs"]
+  F2 --> F3["Switch to production config + set RUSTFLAGS"]
+  F3 --> G["bun tauri build --features official-build"]
   G --> H([Output: target/release/ + bundle/nsis/*.exe])
 ```
 
@@ -278,7 +280,7 @@ flowchart TB
 2. **Submodule auto-fix** — If `screenpipe` exists but has no `Cargo.toml` or `apps/`, runs `git submodule update --init --recursive` once.
 3. **Cargo build** — Builds the core binary: `cargo build --profile release --bin screenpipe` in `screenpipe/` (same as [CONTRIBUTING.md step 8](https://github.com/screenpipe/screenpipe/blob/main/CONTRIBUTING.md#windows): `cargo build --release`).
 4. **Sidecar copy** — Copies `screenpipe.exe` to `screenpipe/apps/screenpipe-app-tauri/src-tauri/binaries/screenpipe-<target>.exe` so Tauri can bundle it ([Tauri sidecar](https://tauri.app/develop/sidecar), target triple from `rustc -vV`).
-5. **Tauri app** — In `screenpipe/apps/screenpipe-app-tauri`: `bun install`, then `bun run scripts/pre_build.js` ([pre_build.js](https://github.com/screenpipe/screenpipe/blob/main/apps/screenpipe-app-tauri/scripts/pre_build.js): FFmpeg/Bun sidecars), then `bun tauri build` ([CONTRIBUTING.md step 8](https://github.com/screenpipe/screenpipe/blob/main/CONTRIBUTING.md#windows)).
+5. **Tauri app** — In `screenpipe/apps/screenpipe-app-tauri`: `bun install`, then `bun run scripts/pre_build.js` ([pre_build.js](https://github.com/screenpipe/screenpipe/blob/main/apps/screenpipe-app-tauri/scripts/pre_build.js): FFmpeg/Bun sidecars), then copies MKL and vcredist DLLs, switches to **production config** (`tauri.prod.conf.json` → `tauri.conf.json`), sets `RUSTFLAGS` and Cargo profile env vars to match upstream, and runs `bun tauri build --features official-build` ([upstream release-app.yml](https://github.com/screenpipe/screenpipe/blob/main/.github/workflows/release-app.yml)).
 
 Build output: `screenpipe/apps/screenpipe-app-tauri/src-tauri/target/release/` (installer or executable).
 
@@ -325,7 +327,7 @@ A workflow **Build Screenpipe (Windows)** (`.github/workflows/build-screenpipe.y
 
 **When it runs:** On push to `main`, on push of a tag `v*`, or manually via **Actions → Build Screenpipe (Windows) → Run workflow**.
 
-**What it uses:** The **screenpipe commit pinned in this repo** (the submodule pointer). It does *not* run `git submodule update --remote` in CI. The job installs Bun, Rust, MSVC, **vcpkg** (and ffmpeg:x64-windows), 7-Zip, wget, GnuWin32 UnZip, LLVM, **Vulkan SDK**, Python (for MKL), and CMake so the build matches upstream (release-app.yml) and is self-contained. So:
+**What it uses:** The **screenpipe commit pinned in this repo** (the submodule pointer). It does *not* run `git submodule update --remote` in CI. The job installs Bun, Rust, MSVC, **vcpkg** (and ffmpeg:x64-windows), 7-Zip, wget, GnuWin32 UnZip, LLVM, **Vulkan SDK**, Python (for MKL), and CMake. It also sets `RUSTFLAGS` and Cargo profile env vars to match upstream. The build uses **production config** and `--features official-build` for full parity with upstream releases. So:
 - **To build the same version you have locally:** Push your branch (and the current submodule commit); the workflow checks out that commit and builds it.
 - **To build a newer Screenpipe:** Run `git submodule update --remote screenpipe` (or pin a specific commit), commit the updated submodule pointer, push. The next run will build that version.
 - **If the run fails:** Open the failed run → expand **Build (setup-screenpipe.ps1)** and check the last lines for the exact error (e.g. missing tool, Rust/Tauri compile error).
@@ -340,7 +342,7 @@ The submodule includes [screenpipe/.github](https://github.com/screenpipe/screen
 
 | Item | What it is | Use for us |
 |------|------------|------------|
-| **workflows/release-app.yml** | Upstream’s official Windows/macOS release pipeline | **Windows:** Reference for 7-Zip, wget, LLVM, vcpkg, MSVC, Vulkan SDK, pre_build.js, MKL, vcredist, then `tauri-action`. We don’t use vcpkg (we use pre_build.js for FFmpeg) or Vulkan in our workflow; we use `setup-screenpipe.ps1` instead of `tauri-action`. |
+| **workflows/release-app.yml** | Upstream's official Windows/macOS release pipeline | **Windows:** Reference for 7-Zip, wget, LLVM, vcpkg, MSVC, Vulkan SDK, pre_build.js, MKL, vcredist, RUSTFLAGS, Cargo profile overrides, prod config swap, `--features official-build`, then `tauri-action`. Our workflow matches upstream for all critical settings; we use `setup-screenpipe.ps1` instead of `tauri-action`. |
 | **workflows/ci.yml** | Rust CI (tests on Ubuntu/Windows) | See how they run `cargo test` and install deps (e.g. `.github/scripts/install_dependencies.sh`). |
 | **workflows/e2e-windows.yml** | E2E on self-hosted Windows | Runner setup, Rust/Bun, health check; we don’t run E2E. |
 | **scripts/** | Helper scripts (install deps, E2E, etc.) | `install_dependencies.sh` for Linux deps; E2E scripts for their tests. |
@@ -371,8 +373,11 @@ If our Windows build fails, comparing our steps with `release-app.yml` (Windows 
 | Repo | Clone once | **Submodule** so we can track/update to latest |
 | Prereqs | Manual install per CONTRIBUTING | **scripts\check-screenpipe-prereqs.ps1** validates and prints install commands; optional **-Fix** for LIBCLANG_PATH |
 | Submodule empty | N/A | **scripts\setup-screenpipe.ps1** runs `git submodule update --init --recursive` once if needed |
-| Build order | `cargo build --release` then `cd apps/...; bun install; bun tauri build` | Same, plus **parallel** bun install during cargo, **optional** release-dev profile, **explicit** sidecar copy, and **pre_build.js** before `bun tauri build` |
+| Build order | `cargo build --release` then `cd apps/...; bun install; bun tauri build` | Same, plus **parallel** bun install during cargo, **optional** release-dev profile, **explicit** sidecar copy, **pre_build.js**, **production config swap**, **RUSTFLAGS/Cargo profile env vars**, and `bun tauri build --features official-build` |
+| Config | `tauri.prod.conf.json` for releases | Same: script copies `tauri.prod.conf.json` → `tauri.conf.json` before building (clean product name, real updater endpoints) |
+| Features | `--features official-build` via `tauri-action` args | Same: `bun tauri build --features official-build` (enables auto-updates, disables "source build" message) |
+| Env vars | `RUSTFLAGS`, `CARGO_PROFILE_RELEASE_*` set in workflow | Same: script sets `RUSTFLAGS=-C target-feature=+crt-static -C link-arg=/LTCG` and Cargo profile overrides (LTO=thin, opt-level=2, panic=abort) |
 | Sidecar | Tauri expects binary in src-tauri/binaries | We build in repo root then **copy** to `binaries/screenpipe-<target>.exe` (Tauri convention) |
-| CI | Upstream uses `release-app.yml` (vcpkg, Vulkan, tauri-action, CrabNebula) | We use **build-screenpipe.yml**: no vcpkg (pre_build.js for FFmpeg), no Vulkan, single `setup-screenpipe.ps1` step; artifact + optional draft release. See [Screenpipe’s .github](#reference-screenpipes-github). |
+| CI | Upstream uses `release-app.yml` (vcpkg, Vulkan, tauri-action, CrabNebula) | We use **build-screenpipe.yml**: vcpkg + pre_build.js for FFmpeg, Vulkan SDK, single `setup-screenpipe.ps1` step; artifact + optional draft release. See [Screenpipe's .github](#reference-screenpipes-github). |
 
 All of the above is backed by the upstream sources linked in the first table and in each section.

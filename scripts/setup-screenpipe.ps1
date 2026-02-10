@@ -206,8 +206,26 @@ Write-Host "Copied sidecar to: $destExe" -ForegroundColor Green
                 if (Test-Path $tempOmp) { Remove-Item -Path $tempOmp -Recurse -Force -ErrorAction SilentlyContinue }
             }
         }
-        Write-Host "Building Tauri app (bun tauri build)..." -ForegroundColor Cyan
-        bun tauri build
+        # --- Switch to production config (upstream: cp tauri.prod.conf.json tauri.conf.json) ---
+        $prodConf = Join-Path $srcTauri "tauri.prod.conf.json"
+        $devConf = Join-Path $srcTauri "tauri.conf.json"
+        if (Test-Path $prodConf) {
+            Copy-Item -Path $prodConf -Destination $devConf -Force
+            Write-Host "Switched to production config (tauri.prod.conf.json)" -ForegroundColor Green
+        } else {
+            Write-Warning "tauri.prod.conf.json not found; building with dev config."
+        }
+
+        # --- Set build env vars to match upstream release-app.yml (Windows) ---
+        $env:RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=/LTCG"
+        $env:CARGO_PROFILE_RELEASE_LTO = "thin"
+        $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = "2"
+        $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16"
+        $env:CARGO_PROFILE_RELEASE_STRIP = "none"
+        $env:CARGO_PROFILE_RELEASE_PANIC = "abort"
+
+        Write-Host "Building Tauri app (bun tauri build --features official-build)..." -ForegroundColor Cyan
+        bun tauri build --features official-build
         if ($LASTEXITCODE -ne 0) {
             Write-Error "bun tauri build failed. See Tauri and pre_build output above."
             exit 1
